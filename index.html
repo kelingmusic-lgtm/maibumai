@@ -607,7 +607,7 @@ const modal=[];
 function normalizeShow(s){let out=[];const U=UNIVERSE.map(x=>x[0]);for(let i=0;i<U.length;i++)out.push(U[i]);return out}
 function listAll(){return UNIVERSE.map(x=>x[0])}
 /* 全市场股票列表（东方财富 clist 接口，一次性加载约 5500+ 只，含涨跌幅/市值/成交额用于热度排序） */
-const FULL={}; let FULL_ORDER=[]; let _fullLoading=0; let _lastQ="";
+const FULL={}; let FULL_ORDER=[]; let _fullLoading=0; let _fullTry=0; let _lastQ=""; let _sugTok=0;
 function loadFullUniverse(){
   if(_fullLoading)return;_fullLoading=1;
   const cb="full_"+Date.now();
@@ -620,7 +620,7 @@ function loadFullUniverse(){
   };
   const sc=document.createElement("script");
   sc.src="https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=6000&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&fields=f12,f14,f3,f8,f20,f6&cb="+cb;
-  sc.onerror=()=>{_fullLoading=0;try{delete window[cb]}catch{}};
+  sc.onerror=()=>{_fullLoading=0;try{delete window[cb]}catch{};if((_fullTry++||0)<3)setTimeout(loadFullUniverse,2200)};
   document.body.appendChild(sc);
 }
 /* 非内置标的的通用外壳：保证任何 A 股都能分析出结果 */
@@ -635,19 +635,10 @@ function makeShell(code){
     flow:{main:0,north:0,superLarge:0,retail:0},hotMoney:{active:false,names:[]},
     boardCount:0,monitor:{state:"正常",days:0,note:""},buyZone:{price:10,lo:9,hi:11},news:[]};
 }
-function onQuery(v){
-  const box=document.getElementById("suggest");
-  if(!v){box.style.display="none";return}
-  _lastQ=v;
-  const toks=v.toLowerCase().split(/[\s,，.、]+/).filter(Boolean);
-  if(!toks.length){box.style.display="none";return}
-  const ok=(c,n)=>{const pin=pinyin(n).toLowerCase();return toks.every(t=>c.includes(t)||n.toLowerCase().includes(t)||pin.includes(t))};
-  const seen={};const res=[];
-  for(const x of UNIVERSE){const c=x[0],n=x[1];if(ok(c,n)){res.push([c,n,x[2]||"A股",1]);seen[c]=1}}
-  if(res.length<12){for(let i=0;i<FULL_ORDER.length;i++){if(res.length>=11)break;const c=FULL_ORDER[i];if(seen[c])continue;const d=FULL[c];if(ok(c,d.name)){res.push([c,d.name,d.sector,0]);seen[c]=1}}}
-  if(!res.length){box.style.display="none";return}
+function renderSug(list,box){
+  if(!list.length){box.style.display="none";return}
   const cls=x=>x>0?"up":(x<0?"dn":"");
-  box.innerHTML=res.map(([c,n,s,cur])=>{
+  box.innerHTML=list.map(([c,n,s,cur])=>{
     const d=FULL[c];
     const badge=cur?`<span class="badge">精析</span>`:"";
     const sub=(d&&typeof d.chg==="number")
@@ -657,11 +648,48 @@ function onQuery(v){
   }).join("");
   box.style.display="block";
 }
+function onQuery(v){
+  const box=document.getElementById("suggest");
+  if(!v){box.style.display="none";return}
+  _lastQ=v;
+  const toks=v.toLowerCase().split(/[\s,，.、]+/).filter(Boolean);
+  if(!toks.length){box.style.display="none";return}
+  const ok=(c,n)=>{const pin=pinyin(n).toLowerCase();return toks.every(t=>c.includes(t)||n.toLowerCase().includes(t)||pin.includes(t))};
+  const seen={};const res=[];
+  for(const x of UNIVERSE){const c=x[0],n=x[1];if(ok(c,n)){res.push([c,n,x[2]||"A股",1]);seen[c]=1}}
+  /* 未满时补内置排序里部分，保证候选常满 */
+  if(res.length<11){for(let i=0;i<FULL_ORDER.length;i++){if(res.length>=11)break;const c=FULL_ORDER[i];if(seen[c])continue;const d=FULL[c];if(ok(c,d.name)){res.push([c,d.name,d.sector,0]);seen[c]=1}}}
+  renderSug(res,box);
+  /* 实时联想搜索（按 名称/代码/拼音 服务端匹配），覆盖任意 A 股 */
+  _sugTok++;const myTok=_sugTok;
+  const sref="sug"+Date.now()+myTok;
+  window[sref]=function(d){
+    if(myTok!==_sugTok){try{delete window[sref]}catch{};return}
+    const add=[];
+    try{const arr=(d&&d.QuotationCodeTable&&d.QuotationCodeTable.Data)||[];
+      for(const it of arr){
+        if(it.Classify!=="AStock")continue;
+        let c=String(it.Code||"");if(/^\d+$/.test(c)&&c.length<6)c="0".repeat(6-c.length)+c;
+        if(!/^\d{6}$/.test(c)||seen[c])continue;
+        add.push([c,it.Name||c,"A股",0]);seen[c]=1;
+        if(add.length>=9)break;
+      }}catch(e){}
+    try{delete window[sref]}catch{};
+    if(add.length)renderSug(res.concat(add),box);
+  };
+  const sc=document.createElement("script");
+  sc.src="https://searchapi.eastmoney.com/api/suggest/get?input="+encodeURIComponent(v)+"&token=D43BF722C8E33BDC906FB84D850E48E2&type=14&count=8&cb="+sref;
+  sc.onerror=function(){try{delete window[sref]}catch{}};
+  document.body.appendChild(sc);
+}
 function pick(code){document.getElementById("q").value=code;document.getElementById("suggest").style.display="none";analyze(code)}
 // 简易拼音首字母
 const _py={"中":["Z"],"际":["J"],"旭":["X"],"创":["C"],"寒":["H"],"武":["W"],"纪":["J"],"绿":["L"],"的":["D"],"谐":["X"],"波":["B"],"万":["W"],"丰":["F"],"奥":["A"],"威":["W"],"贵":["G"],"州":["Z"],"茅":["M"],"台":["T"],"科":["K"],"曙":["S"],"光":["G"],"宁":["N"],"德":["D"],"时":["S"],"代":["D"],"药":["Y"],"明":["M"],"康":["K"],"兆":["Z"],"易":["Y"],"东":["D"],"方":["F"],"财":["C"],"富":["F"],"平":["P"],"安":["A"],"银":["Y"],"行":["H"],"工":["G"],"商":["S"],"招":["Z"],"金":["J"],"融":["R"],"华":["H"],"新":["X"],"电":["D"],"子":["Z"],"通":["T"],"信":["X"],"能":["N"],"源":["Y"],"医":["Y"],"生":["S"],"物":["W"],"证":["Z"],"券":["Q"],"股":["G"],"份":["F"],"有":["Y"],"限":["X"],"公":["G"],"司":["S"],"集":["J"],"团":["T"],"实":["S"],"业":["Y"],"控":["K"],"网":["W"],"络":["L"],"数":["S"],"据":["J"],"软":["R"],"件":["J"],"机":["J"],"器":["Q"],"智":["Z"],"蓝":["L"],"白":["B"],"酒":["J"],"交":["J"],"建":["J"],"设":["S"],"石":["S"],"油":["Y"],"化":["H"],"铁":["T"],"钢":["G"],"煤":["M"],"炭":["T"],"汽":["Q"],"车":["C"],"家":["J"],"硬":["Y"],"件":["J"],"星":["X"],"红":["H"],"云":["Y"],"飞":["F"],"凤":["F"],"扬":["Y"],"江":["J"],"淮":["H"],"山":["S"],"海":["H"],"深":["S"],"圳":["Z"],"沪":["H"],"广":["G"]};
 function pinyin(n){return n.split("").map(c=>_py[c]?Array.isArray(_py[c])?_py[c][0]:_py[c]:"").join("").toLowerCase()}
-function enterPick(){const v=document.getElementById("q").value.trim();if(!v)return;let c=null;let s=UNIVERSE.find(([c,n])=>c===v||n===v);if(s)c=s[0];if(!c&&FULL[v])c=v;if(!c){const toks=v.toLowerCase().split(/[\s,，.、]+/).filter(Boolean);const ok=(cn,n)=>{const pin=pinyin(n).toLowerCase();return toks.every(t=>cn.includes(t)||n.toLowerCase().includes(t)||pin.includes(t))};s=UNIVERSE.filter(x=>ok(x[0],x[1]));if(s[0])c=s[0][0];if(!c){for(const cn of FULL_ORDER){if(ok(cn,FULL[cn].name)){c=cn;break}}}}if(c)pick(c)}
+function enterPick(){const v=document.getElementById("q").value.trim();if(!v)return;let c=null;let s=UNIVERSE.find(([c,n])=>c===v||n===v);if(s)c=s[0];if(!c&&FULL[v])c=v;if(!c){const toks=v.toLowerCase().split(/[\s,，.、]+/).filter(Boolean);const ok=(cn,n)=>{const pin=pinyin(n).toLowerCase();return toks.every(t=>cn.includes(t)||n.toLowerCase().includes(t)||pin.includes(t))};s=UNIVERSE.filter(x=>ok(x[0],x[1]));if(s[0])c=s[0][0];if(!c){for(const cn of FULL_ORDER){if(ok(cn,FULL[cn].name)){c=cn;break}}}}if(c){pick(c);return}
+/* 兜底：未命中则用官方联想接口解析 名称/代码/拼音 → 代码 */
+const etk="entsg"+Date.now();window[etk]=function(d){let cd=null;try{const arr=(d&&d.QuotationCodeTable&&d.QuotationCodeTable.Data)||[];for(const it of arr){if(it.Classify!=="AStock")continue;cd=String(it.Code||"");if(/^\d+$/.test(cd)&&cd.length<6)cd="0".repeat(6-cd.length)+cd;if(/^\d{6}$/.test(cd))break;cd=null}}catch(e){}try{delete window[etk]}catch{};if(cd)pick(cd);else alert("未找到该标的，请核对名称/代码（如 002594 比亚迪）")};
+const es=document.createElement("script");es.src="https://searchapi.eastmoney.com/api/suggest/get?input="+encodeURIComponent(v)+"&token=D43BF722C8E33BDC906FB84D850E48E2&type=14&count=5&cb="+etk;document.body.appendChild(es)}
 
 /* 模式切换 */
 function toggleMode(){
